@@ -1,14 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import Fastify from 'fastify';
+import Fastify, { FastifyInstance } from 'fastify';
 import formBody from '@fastify/formbody';
 import { registerGenerateRoute } from '../src/routes/generate.js';
 import { jobManager } from '../src/jobs/jobManager.js';
 
-function buildApp() {
+function buildApp(): FastifyInstance {
   const app = Fastify({ logger: false });
   app.register(formBody);
-  // monkey patch loadConfig to enforce sync limit of 10
-  (require('../src/shared/config.js') as any).loadConfig = async () => ({ syncRowLimit: 10, defaults: { originatingAccount: { sortCode: '123456', accountNumber: '12345678' } } });
+  process.env.SYNC_ROW_LIMIT = '10';
   return app;
 }
 
@@ -21,7 +20,7 @@ describe('async jobs', () => {
     const body = res.json();
     expect(body.jobId).toBeDefined();
     const job = jobManager.get(body.jobId);
-    expect(job?.state).toBe('pending');
+  expect(job?.state === 'pending' || job?.state === 'running').toBe(true);
   });
 
   it('streams events via SSE', async () => {

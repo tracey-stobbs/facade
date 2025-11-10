@@ -9,8 +9,9 @@ export type JobState = 'pending' | 'running' | 'completed' | 'failed';
 export interface JobRequest {
   fileTypes: string[];
   rows: number;
-  seed?: number;
+  seed?: number; // deterministic seed passed to downstream generators
   processingDate?: string;
+  fail?: boolean; // test hook to simulate failure
 }
 
 export interface JobRecord {
@@ -73,12 +74,17 @@ class JobManager extends EventEmitter {
     this.emit('job-start', job);
     logger.info({ event: 'job.start', id: job.id }, 'Job started');
     try {
+      if (job.request.fail) {
+        throw new Error('Simulated failure');
+      }
       // Simulated stages: build CSV, maybe call external services, finalize.
-      await this.stage(job, 20, async () => {/* placeholder */});
-      await this.stage(job, 70, async () => {/* placeholder heavy work */});
+      await this.stage(job, 20, async () => { /* placeholder stage 1 */ });
+      await this.stage(job, 70, async () => { /* placeholder heavy work */ });
       // Final output (stub) — integrate generator/report wrappers later.
       const filename = `${job.request.fileTypes[0]}-${job.request.rows}.csv`;
-      const content = `header1,header2\nvalue1,value2`; // deterministic stub
+      // Incorporate seed (if provided) for deterministic variation.
+      const seedSuffix = job.request.seed != null ? `-${job.request.seed}` : '';
+      const content = `header1,header2\nvalue1${seedSuffix},value2`; // deterministic stub including seed
       await this.stage(job, 100, async () => {
         job.output = { filename, content };
       });

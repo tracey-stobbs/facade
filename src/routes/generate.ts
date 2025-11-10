@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { loadConfig } from '../shared/config.js';
 import { createLogger } from '../shared/logger.js';
-import { jobManager } from '../jobs/jobManager.js';
+import { jobManager, JobRecord } from '../jobs/jobManager.js';
 
 const logger = createLogger();
 
@@ -63,7 +63,7 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
     if ('error' in model) {
       if (model.error === 'ROWS_EXCEED_SYNC_LIMIT' && typeof model.rows === 'number') {
         // Async job path: enqueue and return 202 Accepted
-        const job = jobManager.enqueue({ fileTypes: body.fileTypes || [], rows: model.rows });
+        const job = jobManager.enqueue({ fileTypes: body.fileTypes || [], rows: model.rows, seed: body.seed });
         return reply.status(202).send({ jobId: job.id, state: job.state, progress: job.progress });
       }
       const status = 400;
@@ -79,36 +79,52 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
     return;
   });
 
+  // Manual job creation (explicit async even below sync limit)
+  interface ManualJobBody extends Partial<GenerateBody> { fail?: boolean }
+  app.post('/jobs', async (req, reply): Promise<void> => {
+    const body = (req.body || {}) as ManualJobBody;
+    const fileTypes = Array.isArray(body.fileTypes) && body.fileTypes.length ? body.fileTypes : ['Unknown'];
+    const rows = typeof body.rows === 'number' && body.rows > 0 ? body.rows : 1;
+    const job = jobManager.enqueue({ fileTypes, rows, seed: body.seed, fail: !!body.fail });
+    reply.status(202).send({ jobId: job.id, state: job.state, progress: job.progress });
+  });
+
+  // List jobs (debug/admin)
+  app.get('/jobs', async (_req, reply): Promise<void> => {
+    const jobs = jobManager.list().map(j => ({ id: j.id, state: j.state, progress: j.progress }));
+    reply.send({ jobs });
+  });
+
   // Job status endpoint
-  app.get('/jobs/:id', async (req, reply) => {
+  app.get('/jobs/:id', async (req, reply): Promise<void> => {
     const id = (req.params as Record<string,string>).id;
     const job = jobManager.get(id);
-    if (!job) return reply.status(404).send({ error: 'JOB_NOT_FOUND' });
-    return reply.send({ id: job.id, state: job.state, progress: job.progress, error: job.error, output: job.output ? { filename: job.output.filename } : undefined });
+    if (!job) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
+    reply.send({ id: job.id, state: job.state, progress: job.progress, error: job.error, output: job.output ? { filename: job.output.filename } : undefined });
   });
 
   // Job output endpoint (CSV content if completed)
-  app.get('/jobs/:id/output', async (req, reply) => {
+  app.get('/jobs/:id/output', async (req, reply): Promise<void> => {
     const id = (req.params as Record<string,string>).id;
     const job = jobManager.get(id);
-    if (!job) return reply.status(404).send({ error: 'JOB_NOT_FOUND' });
-    if (job.state !== 'completed' || !job.output) return reply.status(409).send({ error: 'JOB_NOT_COMPLETE', state: job.state });
+    if (!job) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
+    if (job.state !== 'completed' || !job.output) { reply.status(409).send({ error: 'JOB_NOT_COMPLETE', state: job.state }); return; }
     reply.header('Content-Type', 'text/csv');
     reply.header('Content-Disposition', `attachment; filename="${job.output.filename}"`);
-    return reply.send(job.output.content);
+    reply.send(job.output.content);
   });
 
   // SSE events
-  app.get('/jobs/:id/events', async (req, reply) => {
+  app.get('/jobs/:id/events', async (req, reply): Promise<void> => {
     const id = (req.params as Record<string,string>).id;
     const job = jobManager.get(id);
-    if (!job) return reply.status(404).send('');
+    if (!job) { reply.status(404).send(''); return; }
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive'
     });
-    const send = (j: typeof job) => {
+    const send = (j: typeof job): void => {
       reply.raw.write(`event: progress\n`);
       reply.raw.write(`data: ${JSON.stringify({ id: j.id, state: j.state, progress: j.progress })}\n\n`);
       if (j.state === 'completed' || j.state === 'failed') {
@@ -119,7 +135,7 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
     };
     // initial push
     send(job);
-    const handler = (updated: unknown) => {
+    const handler = (updated: JobRecord): void => {
       const rec = updated as typeof job;
       if (rec.id === id) send(rec);
     };
