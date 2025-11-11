@@ -2,6 +2,9 @@ import { FastifyInstance } from 'fastify';
 import { loadConfig } from '../shared/config.js';
 import { createLogger } from '../shared/logger.js';
 import { jobManager, JobRecord } from '../jobs/jobManager.js';
+import { promises as fs } from 'fs';
+import path from 'path';
+import AdmZip from 'adm-zip';
 
 const logger = createLogger();
 
@@ -95,23 +98,60 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
     reply.send({ jobs });
   });
 
-  // Job status endpoint
+  // Job status endpoint (alias legacy path for compatibility)
+  app.get('/jobs/:id/status', async (req, reply): Promise<void> => {
+    const id = (req.params as Record<string,string>).id;
+    const job = jobManager.get(id);
+    if (!job) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
+    reply.send({ id: job.id, state: job.state, progress: job.progress, error: job.error, output: job.output ? { filenames: job.output.filenames } : undefined, createdAt: job.createdAt, finishedAt: job.finishedAt });
+  });
   app.get('/jobs/:id', async (req, reply): Promise<void> => {
     const id = (req.params as Record<string,string>).id;
     const job = jobManager.get(id);
     if (!job) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
-    reply.send({ id: job.id, state: job.state, progress: job.progress, error: job.error, output: job.output ? { filename: job.output.filename } : undefined });
+    reply.send({ id: job.id, state: job.state, progress: job.progress, error: job.error, output: job.output ? { filenames: job.output.filenames } : undefined, createdAt: job.createdAt, finishedAt: job.finishedAt });
   });
 
-  // Job output endpoint (CSV content if completed)
-  app.get('/jobs/:id/output', async (req, reply): Promise<void> => {
+  // Job download endpoint (zip containing outputs + metadata)
+  app.get('/jobs/:id/download', async (req, reply): Promise<void> => {
     const id = (req.params as Record<string,string>).id;
     const job = jobManager.get(id);
     if (!job) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
     if (job.state !== 'completed' || !job.output) { reply.status(409).send({ error: 'JOB_NOT_COMPLETE', state: job.state }); return; }
-    reply.header('Content-Type', 'text/csv');
-    reply.header('Content-Disposition', `attachment; filename="${job.output.filename}"`);
-    reply.send(job.output.content);
+    try {
+      let zipPath = job.output.zipPath;
+      let zipStat = await fs.stat(zipPath).catch(() => null);
+      if (!zipStat) {
+        // Attempt to (re)create zip on demand from output folder
+        try {
+          const folder = path.dirname(zipPath);
+          const zip = new AdmZip();
+          // add each file referenced in job.output.filenames
+          for (const f of job.output.filenames) {
+            const p = path.join(folder, f);
+            const buf = await fs.readFile(p).catch(() => null);
+            if (buf) zip.addFile(f, buf);
+          }
+          // include metadata if present
+          if (job.output.metadataPath) {
+            const metaBuf = await fs.readFile(job.output.metadataPath).catch(() => null);
+            if (metaBuf) zip.addFile('metadata.json', metaBuf);
+          }
+          zip.writeZip(zipPath);
+          zipStat = await fs.stat(zipPath).catch(() => null);
+        } catch (err) {
+          reply.status(500).send({ error: 'ZIP_CREATE_FAILED', message: (err as Error).message });
+          return;
+        }
+      }
+      const stream = await fs.readFile(zipPath);
+      reply.header('Content-Type', 'application/zip');
+      const baseName = job.output.filenames[0]?.replace(/\.csv$/, '') || job.id;
+      reply.header('Content-Disposition', `attachment; filename="${baseName}.zip"`);
+      reply.send(stream);
+    } catch (err) {
+      reply.status(500).send({ error: 'JOB_DOWNLOAD_ERROR', message: (err as Error).message });
+    }
   });
 
   // SSE events
