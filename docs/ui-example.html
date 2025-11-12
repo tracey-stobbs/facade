@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Facade Generation UI Example</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 2rem; }
+    fieldset { border: 1px solid #ccc; padding: 1rem; }
+    legend { font-weight: bold; }
+    button { padding: 0.5rem 1rem; margin-top: 0.5rem; cursor: pointer; }
+    .log { font-family: monospace; background: #f7f7f7; padding: 0.75rem; height: 200px; overflow: auto; border: 1px solid #e0e0e0; }
+    .status { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Facade Generation Demo</h1>
+  <p>Demonstrates sync vs async handling for <code>/generate</code>. Adjust row count to cross the threshold.</p>
+  <fieldset>
+    <legend>Generate</legend>
+    <label>Rows: <input id="rows" type="number" value="50" min="1" /></label>
+    <label>Seed: <input id="seed" type="number" value="1234" /></label>
+    <button id="btnGenerate">Generate</button>
+  </fieldset>
+  <div class="status" id="status"></div>
+  <h2>Log</h2>
+  <div class="log" id="log"></div>
+<script>
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+}
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+async function startGeneration(payload) {
+  log('Posting /generate ...');
+  const res = await fetch('/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  if (res.status === 200) {
+    log('Received sync CSV response');
+    const blob = await res.blob();
+    downloadBlob(blob, 'generated.csv');
+  } else if (res.status === 202) {
+    const body = await res.json();
+    log('Async job enqueued: ' + body.jobId);
+    monitorJob(body.jobId);
+  } else {
+    log('Error: ' + res.status + ' ' + await res.text());
+  }
+}
+async function monitorJob(jobId) {
+  const statusEl = document.getElementById('status');
+  async function poll() {
+    const res = await fetch('/jobs/' + jobId);
+    const data = await res.json();
+    statusEl.textContent = `Job ${jobId}: ${data.state} (${data.progress}%)`;
+    if (data.state === 'completed') {
+      log('Job completed; downloading ZIP');
+      const zipRes = await fetch('/jobs/' + jobId + '/download');
+      const zipBlob = await zipRes.blob();
+      downloadBlob(zipBlob, jobId + '.zip');
+    } else if (data.state === 'failed') {
+      log('Job failed');
+    } else {
+      setTimeout(poll, 500);
+    }
+  }
+  poll();
+}
+document.getElementById('btnGenerate').addEventListener('click', () => {
+  const rows = Number(document.getElementById('rows').value);
+  const seedVal = document.getElementById('seed').value;
+  const seed = seedVal ? Number(seedVal) : undefined;
+  startGeneration({ fileTypes: ['EaziPay'], rows, seed });
+});
+</script>
+</body>
+</html>

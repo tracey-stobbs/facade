@@ -140,3 +140,10 @@ vite.config.ts.timestamp-*
 
 # Ignore generated output files
 /output/
+# Runtime job persistence artifacts (do not commit)
+jobs-store/
+# Temp smoke test artifacts
+tmp-e2e-smoke*/
+tmp-e2e-smoke-ddica/
+tmp-jobstore-tests/
+tmp-retention-tests/

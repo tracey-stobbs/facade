@@ -3,7 +3,8 @@ import { randomUUID, createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
-import { createLogger } from '../shared/logger.js';
+import { createLogger, logJob } from '../shared/logger.js';
+import { jobStore, JobRecordStoreShape } from './jobStore.js';
 import { loadConfig } from '../shared/config.js';
 
 const logger = createLogger();
@@ -45,9 +46,54 @@ class JobManager extends EventEmitter {
     this.outputRoot = cfg.outputRoot;
     this.retentionDays = cfg.jobRetentionDays;
     await fs.mkdir(this.outputRoot, { recursive: true });
+    // Initialise persistent store; reuse outputRoot/jobs-store sibling for locality.
+    const storeDir = path.join(this.outputRoot, '..', 'jobs-store');
+    await jobStore.init({ dir: storeDir });
+    // Load existing jobs from previous runs (warm restart scenario) except during tests where isolation is preferred.
+    if (process.env.NODE_ENV !== 'test') {
+      const persisted = await jobStore.loadAll();
+      for (const pj of persisted) {
+        // Cast persisted shape into active record; treat completed/failed as terminal.
+        const rec: JobRecord = { ...pj } as JobRecord;
+        this.jobs.set(rec.id, rec);
+      }
+    }
   // Start periodic sweeper in non-test environments only. Tests call sweep() explicitly when needed.
   if (process.env.NODE_ENV !== 'test') this.startSweeper();
     logger.info({ event: 'jobManager.init', outputRoot: this.outputRoot, concurrency: this.concurrency, retentionDays: this.retentionDays }, 'JobManager initialised');
+  }
+
+  // Simple retry helpers to avoid transient ENOENT/EPERM on Windows during
+  // parallel test runs. Small synchronous backoffs are used.
+  private async writeFileWithRetries(filePath: string, data: string | Buffer, attempts = 6) {
+    let lastErr: any = null;
+    const dir = path.dirname(filePath);
+    for (let i = 0; i < attempts; i++) {
+      try {
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(filePath, data as any, 'utf8');
+        lastErr = null;
+        return;
+      } catch (err) {
+        lastErr = err;
+        // small backoff
+        await new Promise(r => setTimeout(r, 8 + i * 4));
+      }
+    }
+    throw lastErr;
+  }
+
+  private async readFileWithRetries(filePath: string, attempts = 10) {
+    let lastErr: any = null;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await fs.readFile(filePath);
+      } catch (err) {
+        lastErr = err;
+        await new Promise(r => setTimeout(r, 5 + i * 5));
+      }
+    }
+    throw lastErr;
   }
 
   private startSweeper(): void {
@@ -67,7 +113,8 @@ class JobManager extends EventEmitter {
             await fs.rm(j.output.zipPath, { force: true });
             await fs.rm(j.output.metadataPath, { force: true });
             this.jobs.delete(j.id);
-            logger.info({ event: 'job.retained.delete', id: j.id }, 'Deleted expired job artifacts');
+            await jobStore.delete(j.id).catch(err => logger.warn({ err, id: j.id }, 'Persist delete failed'));
+            logJob(logger, j.id, 'Deleted expired job artifacts', { event: 'job.retained.delete' });
           } catch (err) {
             logger.warn({ err, id: j.id }, 'Failed deleting expired job artifacts');
           }
@@ -88,8 +135,9 @@ class JobManager extends EventEmitter {
       progress: 0,
     };
     this.jobs.set(id, job);
-    this.emit('job-pending', job);
-    logger.info({ event: 'job.enqueue', id }, 'Job enqueued');
+  this.emit('job-pending', job);
+  logJob(logger, id, 'Job enqueued', { event: 'job.enqueue' });
+    void jobStore.save(job as JobRecordStoreShape).catch(err => logger.warn({ err, id }, 'Persist enqueue failed'));
     this.schedule();
     return job;
   }
@@ -119,8 +167,9 @@ class JobManager extends EventEmitter {
     job.state = 'running';
     job.updatedAt = new Date().toISOString();
     job.startedAt = job.updatedAt;
-    this.emit('job-start', job);
-    logger.info({ event: 'job.start', id: job.id }, 'Job started');
+  this.emit('job-start', job);
+  logJob(logger, job.id, 'Job started', { event: 'job.start' });
+    void jobStore.save(job as JobRecordStoreShape).catch(err => logger.warn({ err, id: job.id }, 'Persist start failed'));
     try {
       if (job.request.fail) {
         throw new Error('Simulated failure');
@@ -137,9 +186,9 @@ class JobManager extends EventEmitter {
         const folder = path.join(this.outputRoot, job.id);
         await fs.mkdir(folder, { recursive: true });
         const filePath = path.join(folder, filename);
-        await fs.writeFile(filePath, content, 'utf8');
-        const stats = await fs.stat(filePath);
-        const checksum = createHash('sha256').update(content).digest('hex');
+  await this.writeFileWithRetries(filePath, content);
+  const stats = await fs.stat(filePath);
+  const checksum = createHash('sha256').update(content).digest('hex');
         const metadata = {
           requestOptions: { fileTypes: job.request.fileTypes, rows: job.request.rows, seed: job.request.seed },
           generatorVersion: 'stub-0.0.1',
@@ -152,14 +201,14 @@ class JobManager extends EventEmitter {
           rowsGenerated: job.request.rows,
           originatingAccount: { sortCode: '000000', accountNumber: '00000000' },
         };
-        const metadataPath = path.join(folder, 'metadata.json');
-        await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+    const metadataPath = path.join(folder, 'metadata.json');
+    await this.writeFileWithRetries(metadataPath, JSON.stringify(metadata, null, 2));
   // Real zip packaging: csv + metadata.json at root
   const zipPath = path.join(folder, 'artifact.zip');
   const zip = new AdmZip();
   zip.addFile(filename, Buffer.from(content, 'utf8'));
-  const metaBuf = await fs.readFile(metadataPath);
-  zip.addFile('metadata.json', metaBuf);
+  const metaBuf = await this.readFileWithRetries(metadataPath);
+  zip.addFile('metadata.json', metaBuf as Buffer);
   zip.writeZip(zipPath);
         job.output = { filenames: [filename], zipPath, metadataPath };
       });
@@ -171,22 +220,25 @@ class JobManager extends EventEmitter {
         // patch metadata with durationMs
         if (job.output) {
           try {
-            const raw = await fs.readFile(job.output.metadataPath, 'utf8');
-            const meta = JSON.parse(raw);
+            const raw = await this.readFileWithRetries(job.output.metadataPath);
+            const meta = JSON.parse(String(raw));
             meta.durationMs = job.durationMs;
-            await fs.writeFile(job.output.metadataPath, JSON.stringify(meta, null, 2), 'utf8');
+            await this.writeFileWithRetries(job.output.metadataPath, JSON.stringify(meta, null, 2));
           } catch (err) {
             logger.warn({ err, id: job.id }, 'Failed to update metadata durationMs');
           }
         }
       }
-      this.emit('job-complete', job);
-      logger.info({ event: 'job.complete', id: job.id }, 'Job completed');
+  this.emit('job-complete', job);
+  logJob(logger, job.id, 'Job completed', { event: 'job.complete' });
+      void jobStore.save(job as JobRecordStoreShape).catch(err => logger.warn({ err, id: job.id }, 'Persist complete failed'));
     } catch (e) {
       job.state = 'failed';
       job.updatedAt = new Date().toISOString();
       job.error = { code: 'JOB_FAILED', message: (e as Error).message };
-      this.emit('job-failed', job);
+  this.emit('job-failed', job);
+  logJob(logger, job.id, 'Job failed', { event: 'job.failed', error: job.error }, 'error');
+      void jobStore.save(job as JobRecordStoreShape).catch(err => logger.warn({ err, id: job.id }, 'Persist failed-state save failed'));
     } finally {
       this.schedule(); // attempt to run next
     }
@@ -196,8 +248,15 @@ class JobManager extends EventEmitter {
     await fn();
     job.progress = targetProgress;
     job.updatedAt = new Date().toISOString();
-    this.emit('job-progress', job);
+  this.emit('job-progress', job);
+  logJob(logger, job.id, 'Job progress', { event: 'job.progress', progress: job.progress });
+    void jobStore.save(job as JobRecordStoreShape).catch(err => logger.warn({ err, id: job.id }, 'Persist progress failed'));
     await new Promise(r => setTimeout(r, 25)); // tiny delay to simulate async
+  }
+
+  // Test helper: clear all in-memory jobs (does not delete persisted files)
+  _resetForTests(): void {
+    this.jobs.clear();
   }
 }
 

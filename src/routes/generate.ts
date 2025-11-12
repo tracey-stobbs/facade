@@ -119,7 +119,8 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
     if (!job) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
     if (job.state !== 'completed' || !job.output) { reply.status(409).send({ error: 'JOB_NOT_COMPLETE', state: job.state }); return; }
     try {
-      let zipPath = job.output.zipPath;
+  // Zip path is immutable for a completed job; use const for clarity.
+  const zipPath = job.output.zipPath;
       let zipStat = await fs.stat(zipPath).catch(() => null);
       if (!zipStat) {
         // Attempt to (re)create zip on demand from output folder

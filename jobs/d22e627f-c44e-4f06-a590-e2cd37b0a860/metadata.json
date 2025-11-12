@@ -1,0 +1,27 @@
+{
+  "requestOptions": {
+    "fileTypes": [
+      "EaziPay"
+    ],
+    "rows": 10,
+    "seed": 42
+  },
+  "generatorVersion": "stub-0.0.1",
+  "createdAt": "2025-11-12T13:58:31.321Z",
+  "durationMs": 166,
+  "filenames": [
+    "EaziPay-10.csv"
+  ],
+  "fileSizes": {
+    "EaziPay-10.csv": 32
+  },
+  "checksums": {
+    "EaziPay-10.csv": "a2dbc479e5b3db66549f02224ed89680eb0155ca4c6b1d2c80ddd54bfc491546"
+  },
+  "rowsRequested": 10,
+  "rowsGenerated": 10,
+  "originatingAccount": {
+    "sortCode": "000000",
+    "accountNumber": "00000000"
+  }
+}

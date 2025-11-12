@@ -1,35 +1,94 @@
-# Facade Service (Milestones 1–4)
+# Facade Service (Milestones 1–5)
 
-Adds asynchronous job processing for large generation requests (Milestone 4) on top of the initial façade skeleton.
+Unified entry-point that orchestrates test data file generation (via Generator service) and report translation (via Report API) offering synchronous streaming for small requests and asynchronous job handling with ZIP packaging for larger multi-artifact workflows.
 
-## Implemented
+## Implemented Overview
 ### Core (Milestone 1)
-- Fastify server on port 3001 (`src/server.ts`)
-- JSON config loader with fallback (`src/shared/config.ts`)
-- Structured logging via pino (`src/shared/logger.ts`)
-- POST `/generate` synchronous path enforcing `SYNC_ROW_LIMIT`
-- Basic normalisation + validation errors
-### Async Jobs (Milestone 4)
-- In-memory job manager (`src/jobs/jobManager.ts`) with states: `pending`, `running`, `completed`, `failed`
-- Auto–enqueue when `rows > syncRowLimit` returning `202 Accepted`
-- Job status endpoint `GET /jobs/:id`
-- Job output endpoint `GET /jobs/:id/output`
-- SSE events endpoint `GET /jobs/:id/events` streaming progress + end event
-- Progress staging simulation (20% → 70% → 100%)
-- Vitest tests for enqueue and lifecycle (`tests/jobs.spec.ts`)
+* Fastify server on port 3001 (`src/server.ts`)
+* Config loader (`src/shared/config.ts`) merging env + `config/defaults.json`
+* Structured logging wrapper + domain helper (`src/shared/logger.ts`)
+* POST `/generate` deciding sync vs async based on `SYNC_ROW_LIMIT`.
+### Persistence & Jobs (Milestones 1–4)
+* Job manager (`src/jobs/jobManager.ts`) with states: `pending`, `running`, `completed`, `failed`.
+* Persistent JSON job store (`src/jobs/jobStore.ts`) for durability across restarts.
+* Auto enqueue path (202 Accepted) when row count exceeds sync threshold or multi-file requested.
+* Endpoints: `GET /jobs`, `GET /jobs/:id`, `GET /jobs/:id/status`, `GET /jobs/:id/download` (ZIP with `metadata.json`).
+* SSE streaming progress: `GET /jobs/:id/events`.
+* Retention sweeper removing expired job artifacts based on `JOB_RETENTION_DAYS`.
+### Reporting Integration (Milestone 3)
+* Separate Report API exposes `/translate/json` and `/translate/file` for CSV→XML workflows (see `../bacs-report-api`).
+### Generator Integration (Milestone 2)
+* Generator service exposes `/generate-file` for deterministic CSV generation (see `../bacs-file-data-generator`).
+### Logging (Milestone 4)
+* Consistent JSON structure: `{ ts, level, jobId, event, msg, ... }` emitted on lifecycle transitions.
+### UI Sample (Milestone 5)
+* Minimal HTML/JS example (`docs/ui-example.html`) to demonstrate sync generation and async job polling (SEE BELOW).
+### Tests
+* Sync vs async decision, job lifecycle, persistence, retention sweeper, SSE progress.
 
-## Env Vars
-- `PORT` (default 3001)
-- `SYNC_ROW_LIMIT` (default 5000)
-- `DEBUG` (sets log level to debug)
+## Environment Variables
+* `PORT` (default 3001) – façade server port.
+* `SYNC_ROW_LIMIT` (default 5000) – max rows for synchronous streaming.
+* `MAX_CONCURRENT_JOBS` (default 4) – parallel job limit.
+* `JOB_RETENTION_DAYS` (default 7) – artifact retention window.
+* `OUTPUT_ROOT` (default `<repo>/jobs`) – base for job artifact folders.
+* `DEBUG` – set for verbose logging.
 
-## Future
-- Integrate real generator & report services into job stages
-- Persist jobs (Redis / file-backed) for durability
-- Cancellation endpoint `DELETE /jobs/:id`
-- Seed propagation for deterministic async runs
-- Retry strategy for transient failures
-- UI integration (Milestone 5)
+## API Contract
+### POST `/generate`
+Request body (JSON):
+```json
+{
+	"fileTypes": ["EaziPay"],
+	"rows": 2500,
+	"seed": 1234,
+	"originatingAccount": {
+		"sortCode": "401726",
+		"accountNumber": "51779109"
+	}
+}
+```
+Responses:
+* `200 text/csv` – single-file generation within sync limit.
+* `202 application/json` – `{ jobId, state, progress }` for async path.
+* `400 application/json` – `{ code, detail }` validation errors.
+
+### GET `/jobs/:id`
+Returns job status & summary: `{ id, state, progress, output? }`.
+
+### GET `/jobs/:id/download`
+Returns ZIP file containing generated artifacts + `metadata.json`.
+
+### GET `/jobs/:id/events`
+Server-Sent Events stream `progress` + final `end` event.
+
+## UI Example (Milestone 5)
+File: `docs/ui-example.html` contains a minimal fetch-based interface demonstrating:
+1. Sync request (rows below threshold) – triggers file download.
+2. Async request – polls status and enables ZIP download when complete.
+
+### Snippet (Core JS Extract)
+```js
+async function startGeneration(payload) {
+	const res = await fetch('/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+	if (res.status === 200) {
+		const blob = await res.blob();
+		downloadBlob(blob, 'generated.csv');
+	} else if (res.status === 202) {
+		const { jobId } = await res.json();
+		monitorJob(jobId);
+	} else {
+		console.error('Error', await res.json());
+	}
+}
+```
+
+## Future Enhancements
+* Cancellation endpoint `DELETE /jobs/:id`.
+* Retry & backoff for transient generator/report failures.
+* Streaming adapter for multi-artifact preview.
+* Pluggable persistence (swap file-store with Redis/Postgres).
+* Metrics endpoint (job throughput, queue depth).
 
 ## Run
 ```bash
@@ -53,3 +112,6 @@ event: end
 data: {"id":"<uuid>","state":"completed"}
 ```
 Connection closes automatically on completion or failure; clients should reconnect if interrupted.
+
+---
+_Milestone 5 complete: façade now documents its public contract and includes a UI sample stub for local experimentation._
