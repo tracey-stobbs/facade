@@ -4,6 +4,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import { createLogger, logJob } from '../shared/logger.js';
+import { generateEaziPayWithRetry } from '../integration/generatorClient.js';
+import { generateDdicaWithRetry } from '../integration/reportApiClient.js';
 import { jobStore, JobRecordStoreShape } from './jobStore.js';
 import { loadConfig } from '../shared/config.js';
 
@@ -17,6 +19,13 @@ export interface JobRequest {
   seed?: number; // deterministic seed passed to downstream generators
   processingDate?: string;
   fail?: boolean; // test hook to simulate failure
+  sun?: {
+    sunNumber?: string;
+    sunName?: string;
+    sortCode?: string;
+    accountNumber?: string;
+    accountName?: string;
+  };
 }
 
 export interface JobRecord {
@@ -31,6 +40,7 @@ export interface JobRecord {
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
+  cancelRequested?: boolean;
 }
 
 class JobManager extends EventEmitter {
@@ -57,6 +67,9 @@ class JobManager extends EventEmitter {
         const rec: JobRecord = { ...pj } as JobRecord;
         this.jobs.set(rec.id, rec);
       }
+      // If we loaded persisted jobs, attempt to schedule any pending ones
+      // so the manager resumes processing after a restart.
+      this.schedule();
     }
   // Start periodic sweeper in non-test environments only. Tests call sweep() explicitly when needed.
   if (process.env.NODE_ENV !== 'test') this.startSweeper();
@@ -135,6 +148,8 @@ class JobManager extends EventEmitter {
       progress: 0,
     };
     this.jobs.set(id, job);
+    // clear cancellation flag when newly enqueued
+    job.cancelRequested = false;
   this.emit('job-pending', job);
   logJob(logger, id, 'Job enqueued', { event: 'job.enqueue' });
     void jobStore.save(job as JobRecordStoreShape).catch(err => logger.warn({ err, id }, 'Persist enqueue failed'));
@@ -175,42 +190,69 @@ class JobManager extends EventEmitter {
         throw new Error('Simulated failure');
       }
       // Simulated stages: build CSV, maybe call external services, finalize.
-      await this.stage(job, 20, async () => { /* placeholder stage 1 */ });
-      await this.stage(job, 70, async () => { /* placeholder heavy work */ });
-      // Final output (stub) — integrate generator/report wrappers later.
-      const filename = `${job.request.fileTypes[0]}-${job.request.rows}.csv`;
-      const seedSuffix = job.request.seed != null ? `-${job.request.seed}` : '';
-      const content = `header1,header2\nvalue1${seedSuffix},value2`; // deterministic stub including seed
+      await this.stage(job, 20, async () => { /* initial lightweight stage */ });
+      // Stage 70: generate EaziPay CSV via generator service (or fallback direct import)
+      let eazipayResult: { csvContent: string; checksumSha256: string; rows: number; filename: string } | null = null;
+      await this.stage(job, 70, async () => {
+        const genUrl = process.env.GENERATOR_URL || 'http://localhost:3002';
+        eazipayResult = await generateEaziPayWithRetry(genUrl, { rows: job.request.rows, seed: job.request.seed });
+      });
+      // Stage 100: generate DDICA XML then package both artifacts + merged metadata
       await this.stage(job, 100, async () => {
-        // Write artifacts
+        const reportUrl = process.env.REPORT_API_URL || 'http://localhost:3003';
+        const ddica = await generateDdicaWithRetry(reportUrl, {
+          rows: job.request.rows,
+          sun: job.request.sun,
+          processingDate: job.request.processingDate,
+        });
+        // Write artifacts to job folder
         const folder = path.join(this.outputRoot, job.id);
         await fs.mkdir(folder, { recursive: true });
-        const filePath = path.join(folder, filename);
-  await this.writeFileWithRetries(filePath, content);
-  const stats = await fs.stat(filePath);
-  const checksum = createHash('sha256').update(content).digest('hex');
-        const metadata = {
-          requestOptions: { fileTypes: job.request.fileTypes, rows: job.request.rows, seed: job.request.seed },
-          generatorVersion: 'stub-0.0.1',
+        if (!eazipayResult) throw new Error('EaziPay result missing at packaging stage');
+        const eazipayPath = path.join(folder, eazipayResult.filename);
+        await this.writeFileWithRetries(eazipayPath, eazipayResult.csvContent);
+        const ddicaFilename = ddica.filename;
+        const ddicaPath = path.join(folder, ddicaFilename);
+        await this.writeFileWithRetries(ddicaPath, ddica.xmlContent);
+        const eaziStats = await fs.stat(eazipayPath);
+        const ddicaStats = await fs.stat(ddicaPath);
+        const combinedMeta = {
+          request: job.request,
+          stages: { eazipayGenerated: 70, ddicaGenerated: 100 },
           createdAt: job.createdAt,
-          durationMs: 0, // placeholder; set after finishedAt
-          filenames: [filename],
-          fileSizes: { [filename]: stats.size },
-          checksums: { [filename]: checksum },
-          rowsRequested: job.request.rows,
-          rowsGenerated: job.request.rows,
-          originatingAccount: { sortCode: '000000', accountNumber: '00000000' },
+          generator: {
+            eazipay: {
+              rows: eazipayResult.rows,
+              checksumSha256: eazipayResult.checksumSha256,
+              filename: eazipayResult.filename,
+              sizeBytes: eaziStats.size,
+            },
+            ddica: {
+              rows: ddica.rows,
+              checksumSha256: ddica.checksumSha256,
+              filename: ddica.filename,
+              sizeBytes: ddicaStats.size,
+              sourceXmlPath: ddica.xmlPath,
+            },
+          },
+          checksums: {
+            [eazipayResult.filename]: eazipayResult.checksumSha256,
+            [ddica.filename]: ddica.checksumSha256,
+          },
+          totalRowsRequested: job.request.rows,
+          totalRowsGenerated: { eazipay: eazipayResult.rows, ddica: ddica.rows },
         };
-    const metadataPath = path.join(folder, 'metadata.json');
-    await this.writeFileWithRetries(metadataPath, JSON.stringify(metadata, null, 2));
-  // Real zip packaging: csv + metadata.json at root
-  const zipPath = path.join(folder, 'artifact.zip');
-  const zip = new AdmZip();
-  zip.addFile(filename, Buffer.from(content, 'utf8'));
-  const metaBuf = await this.readFileWithRetries(metadataPath);
-  zip.addFile('metadata.json', metaBuf as Buffer);
-  zip.writeZip(zipPath);
-        job.output = { filenames: [filename], zipPath, metadataPath };
+        const metadataPath = path.join(folder, 'metadata.json');
+        await this.writeFileWithRetries(metadataPath, JSON.stringify(combinedMeta, null, 2));
+        // Zip: include both artifacts + metadata
+        const zipPath = path.join(folder, 'artifact.zip');
+        const zip = new AdmZip();
+        zip.addFile(eazipayResult.filename, Buffer.from(eazipayResult.csvContent, 'utf8'));
+        zip.addFile(ddicaFilename, Buffer.from(ddica.xmlContent, 'utf8'));
+        const metaBuf = await this.readFileWithRetries(metadataPath);
+        zip.addFile('metadata.json', metaBuf as Buffer);
+        zip.writeZip(zipPath);
+        job.output = { filenames: [eazipayResult.filename, ddicaFilename], zipPath, metadataPath };
       });
       job.state = 'completed';
       job.updatedAt = new Date().toISOString();
@@ -236,12 +278,39 @@ class JobManager extends EventEmitter {
       job.state = 'failed';
       job.updatedAt = new Date().toISOString();
       job.error = { code: 'JOB_FAILED', message: (e as Error).message };
+      // If cancellation requested, adjust code
+      if (job.cancelRequested) job.error = { code: 'JOB_CANCELLED', message: 'Job cancelled by request' };
   this.emit('job-failed', job);
   logJob(logger, job.id, 'Job failed', { event: 'job.failed', error: job.error }, 'error');
       void jobStore.save(job as JobRecordStoreShape).catch(err => logger.warn({ err, id: job.id }, 'Persist failed-state save failed'));
     } finally {
       this.schedule(); // attempt to run next
     }
+  }
+
+  async cancel(id: string): Promise<boolean> {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    // If pending, mark failed/cancelled and persist
+    if (job.state === 'pending') {
+      job.state = 'failed';
+      job.error = { code: 'JOB_CANCELLED', message: 'Cancelled while pending' };
+      job.updatedAt = new Date().toISOString();
+      await jobStore.save(job as JobRecordStoreShape).catch(() => undefined);
+      this.jobs.set(id, job);
+      this.emit('job-failed', job);
+      return true;
+    }
+    // If running, set cancelRequested flag; run() will pick up and mark as cancelled
+    if (job.state === 'running') {
+      job.cancelRequested = true;
+      // Best-effort: mark error; the running task may still finish but will include cancellation flag
+      job.error = { code: 'JOB_CANCEL_REQUESTED', message: 'Cancellation requested' };
+      await jobStore.save(job as JobRecordStoreShape).catch(() => undefined);
+      return true;
+    }
+    // Completed/failed cannot be cancelled
+    return false;
   }
 
   private async stage(job: JobRecord, targetProgress: number, fn: () => Promise<void>): Promise<void> {

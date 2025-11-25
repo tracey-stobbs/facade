@@ -19,6 +19,13 @@ interface GenerateBody {
     accountName?: string;
     accountType?: 'C' | 'S';
   };
+  sun?: {
+    sunNumber?: string;
+    sunName?: string;
+    sortCode?: string;
+    accountNumber?: string;
+    accountName?: string;
+  };
 }
 
 interface NormalisedSuccess {
@@ -59,14 +66,30 @@ function normalise(body: GenerateBody, syncRowLimit: number, defaults: { origina
 }
 
 export async function registerGenerateRoute(app: FastifyInstance): Promise<void> {
-  app.post('/generate', async (req, reply): Promise<void> => {
+  // Request schema for validation
+  const generateSchema = {
+    body: {
+      type: 'object',
+      properties: {
+        fileTypes: { type: 'array', items: { type: 'string' } },
+        rows: { type: 'integer' },
+        seed: { type: 'integer' },
+        processingDate: { type: 'string' },
+        originatingAccount: { type: 'object' },
+        sun: { type: 'object' }
+      },
+      required: ['fileTypes', 'rows']
+    }
+  } as const;
+
+  app.post('/generate', { schema: generateSchema }, async (req, reply): Promise<void> => {
     const config = await loadConfig();
     const body = req.body as GenerateBody || {};
     const model = normalise(body, config.syncRowLimit, config.defaults);
     if ('error' in model) {
       if (model.error === 'ROWS_EXCEED_SYNC_LIMIT' && typeof model.rows === 'number') {
         // Async job path: enqueue and return 202 Accepted
-        const job = jobManager.enqueue({ fileTypes: body.fileTypes || [], rows: model.rows, seed: body.seed });
+        const job = jobManager.enqueue({ fileTypes: body.fileTypes || [], rows: model.rows, seed: body.seed, sun: body.sun });
         return reply.status(202).send({ jobId: job.id, state: job.state, progress: job.progress });
       }
       const status = 400;
@@ -88,13 +111,13 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
     const body = (req.body || {}) as ManualJobBody;
     const fileTypes = Array.isArray(body.fileTypes) && body.fileTypes.length ? body.fileTypes : ['Unknown'];
     const rows = typeof body.rows === 'number' && body.rows > 0 ? body.rows : 1;
-    const job = jobManager.enqueue({ fileTypes, rows, seed: body.seed, fail: !!body.fail });
+    const job = jobManager.enqueue({ fileTypes, rows, seed: body.seed, fail: !!body.fail, sun: (body as any).sun });
     reply.status(202).send({ jobId: job.id, state: job.state, progress: job.progress });
   });
 
   // List jobs (debug/admin)
   app.get('/jobs', async (_req, reply): Promise<void> => {
-    const jobs = jobManager.list().map(j => ({ id: j.id, state: j.state, progress: j.progress }));
+    const jobs = jobManager.list().map(j => ({ id: j.id, state: j.state, progress: j.progress, links: { status: `/jobs/${j.id}/status` } }));
     reply.send({ jobs });
   });
 
@@ -103,7 +126,11 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
     const id = (req.params as Record<string,string>).id;
     const job = jobManager.get(id);
     if (!job) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
-    reply.send({ id: job.id, state: job.state, progress: job.progress, error: job.error, output: job.output ? { filenames: job.output.filenames } : undefined, createdAt: job.createdAt, finishedAt: job.finishedAt });
+    const base = { id: job.id, state: job.state, progress: job.progress, error: job.error, output: job.output ? { filenames: job.output.filenames } : undefined, createdAt: job.createdAt, finishedAt: job.finishedAt };
+    if (job.state === 'completed') {
+      (base as any).links = { summary: `/jobs/${job.id}/summary` };
+    }
+    reply.send(base);
   });
   app.get('/jobs/:id', async (req, reply): Promise<void> => {
     const id = (req.params as Record<string,string>).id;
@@ -153,6 +180,40 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
     } catch (err) {
       reply.status(500).send({ error: 'JOB_DOWNLOAD_ERROR', message: (err as Error).message });
     }
+  });
+
+  // Job summary endpoint
+  app.get('/jobs/:id/summary', async (req, reply): Promise<void> => {
+    const id = (req.params as Record<string,string>).id;
+    const job = jobManager.get(id);
+    if (!job) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
+    if (job.state !== 'completed' || !job.output) { reply.status(409).send({ error: 'JOB_NOT_COMPLETE', state: job.state }); return; }
+    const folder = path.join((await loadConfig()).outputRoot, id);
+    const artifacts = job.output.filenames.map((name) => ({ name, path: path.join(folder, name), downloadUrl: `/jobs/${id}/download?file=${encodeURIComponent(name)}` }));
+    reply.send({ id: job.id, state: job.state, progress: job.progress, artifacts, downloadUrl: `/jobs/${id}/download`, fileLocation: folder, metadata: job.output ? JSON.parse(await fs.readFile(job.output.metadataPath, 'utf8')) : undefined });
+  });
+
+  // Admin: resume persisted pending jobs
+  app.post('/admin/resume-jobs', async (_req, reply): Promise<void> => {
+    // Simple resume: re-run schedule() to pick up persisted pending jobs (jobManager.init already loads persisted)
+    // For testability, call jobManager.init if needed; otherwise trigger schedule and return count
+    // Note: in this non-blocking small tool we assume jobStore has the persisted entries
+    try {
+      // Trigger scheduling by re-reading store (jobManager handles persistence)
+      // jobManager.init is safe to call again in non-test environments
+      await jobManager.init();
+      reply.send({ resumed: jobManager.list().filter(j => j.state === 'pending').length });
+    } catch (err) {
+      reply.status(500).send({ error: 'RESUME_FAILED', message: (err as Error).message });
+    }
+  });
+
+  // Cancel job
+  app.delete('/jobs/:id', async (req, reply): Promise<void> => {
+    const id = (req.params as Record<string,string>).id;
+    const ok = await jobManager.cancel(id);
+    if (!ok) { reply.status(404).send({ error: 'JOB_NOT_FOUND' }); return; }
+    reply.send({ id, cancelled: true });
   });
 
   // SSE events

@@ -19,6 +19,8 @@ export interface AppConfig {
   jobRetentionDays: number;
   maxConcurrentJobs: number;
   outputRoot: string; // root directory for persisted job artifacts/zips
+  generatorUrl: string; // base URL for EaziPay generator service
+  reportApiUrl: string; // base URL for report API service (DDICA)
 }
 
 const logger = createLogger();
@@ -37,6 +39,8 @@ export async function loadConfig(): Promise<AppConfig> {
   const jobRetentionDays = Number(process.env.JOB_RETENTION_DAYS || 7);
   const maxConcurrentJobs = Number(process.env.MAX_CONCURRENT_JOBS || 4);
   const outputRoot = process.env.OUTPUT_ROOT ? path.resolve(process.env.OUTPUT_ROOT) : path.join(process.cwd(), 'jobs');
+  const generatorUrl = process.env.GENERATOR_URL || 'http://localhost:3002';
+  const reportApiUrl = process.env.REPORT_API_URL || 'http://localhost:3003';
   const defaultsPath = path.join(process.cwd(), 'config', 'defaults.json');
   let defaults: DefaultsConfig = DEFAULTS_FALLBACK;
   try {
@@ -45,5 +49,5 @@ export async function loadConfig(): Promise<AppConfig> {
   } catch (err) {
     logger.warn({ err, defaultsPath }, 'defaults.json missing or unreadable; using fallback');
   }
-  return { defaults, syncRowLimit, jobRetentionDays, maxConcurrentJobs, outputRoot };
+  return { defaults, syncRowLimit, jobRetentionDays, maxConcurrentJobs, outputRoot, generatorUrl, reportApiUrl };
 }

@@ -147,3 +147,5 @@ tmp-e2e-smoke*/
 tmp-e2e-smoke-ddica/
 tmp-jobstore-tests/
 tmp-retention-tests/
+# Per-run generated job outputs (do not commit)
+jobs/

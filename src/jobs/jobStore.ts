@@ -83,8 +83,19 @@ class JobStore {
     const files = await fs.readdir(this.dir).catch(() => []);
     for (const f of files) {
       if (!f.endsWith('.json')) continue;
+      // Skip transient temp files that may contain partial JSON content. These
+      // are created during the atomic write process and sometimes linger if a
+      // rename fails or the process is interrupted. Examples: '<id>.tmp-1234'
+      // '<id>.tmp-1234.json'.
+      if (f.includes('.tmp-')) continue;
+      const abs = path.join(this.dir, f);
       try {
-        const raw = await fs.readFile(path.join(this.dir, f), 'utf8');
+        const stats = await fs.stat(abs).catch(() => null);
+        if (!stats || stats.size === 0) {
+          // empty file — skip
+          continue;
+        }
+        const raw = await fs.readFile(abs, 'utf8');
         entries.push(JSON.parse(raw));
       } catch (err) {
         this.logger.warn({ err, file: f }, 'Failed to read job file');
