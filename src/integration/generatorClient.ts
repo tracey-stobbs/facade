@@ -6,6 +6,13 @@ import { pathToFileURL } from 'url';
 export interface EaziPayGenerationOptions {
   rows: number;
   seed?: number;
+  originating?: {
+    sortCode?: string;
+    accountNumber?: string;
+    accountName?: string;
+    sunNumber?: string;
+    sunName?: string;
+  };
 }
 
 export interface EaziPayResult {
@@ -22,7 +29,15 @@ async function httpGenerate(url: string, opts: EaziPayGenerationOptions): Promis
     fileType: 'EaziPay',
     rows: opts.rows,
     seed: opts.seed,
+    originating: opts.originating,
   };
+  // Debug: log outbound payload to help trace originating/SUN propagation
+  try {
+    // eslint-disable-next-line no-console
+    console.debug('[generatorClient] HTTP generate payload:', JSON.stringify(body));
+  } catch {
+    // ignore
+  }
   const res = await fetch(`${url.replace(/\/$/, '')}/generate-file`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -44,7 +59,14 @@ async function directImport(opts: EaziPayGenerationOptions): Promise<EaziPayResu
     const fileUrl = pathToFileURL(candidate).href;
     const mod: any = await import(fileUrl);
     if (!mod || !mod.generateFile) throw new Error('generateFile export missing');
-    const result = await mod.generateFile({ fileType: 'EaziPay', numberOfRows: opts.rows });
+    const genReq = { fileType: 'EaziPay', numberOfRows: opts.rows, originating: opts.originating };
+    try {
+      // eslint-disable-next-line no-console
+      console.debug('[generatorClient] direct import genReq:', JSON.stringify(genReq));
+    } catch {
+      // ignore
+    }
+    const result = await mod.generateFile(genReq);
     const csvContent: string = result.fileContent;
     const checksumSha256 = createHash('sha256').update(csvContent).digest('hex');
     const lines = csvContent.split(/\n/).filter(l => l.trim().length > 0).length;

@@ -142,12 +142,13 @@ class JobManager extends EventEmitter {
     const job: JobRecord = {
       id,
       state: 'pending',
-      request: req,
+      request: { ...req },
       createdAt: now,
       updatedAt: now,
       progress: 0,
     };
     this.jobs.set(id, job);
+    logger.info({ event: 'job.enqueue.request', id, sun: job.request.sun ?? null }, 'Enqueue request debug');
     // clear cancellation flag when newly enqueued
     job.cancelRequested = false;
   this.emit('job-pending', job);
@@ -195,7 +196,20 @@ class JobManager extends EventEmitter {
       let eazipayResult: { csvContent: string; checksumSha256: string; rows: number; filename: string } | null = null;
       await this.stage(job, 70, async () => {
         const genUrl = process.env.GENERATOR_URL || 'http://localhost:3002';
-        eazipayResult = await generateEaziPayWithRetry(genUrl, { rows: job.request.rows, seed: job.request.seed });
+        const originating = job.request.sun ? {
+          sortCode: job.request.sun.sortCode,
+          accountNumber: job.request.sun.accountNumber,
+          accountName: job.request.sun.accountName,
+          sunNumber: job.request.sun.sunNumber,
+          sunName: job.request.sun.sunName,
+        } : undefined;
+        try {
+          // eslint-disable-next-line no-console
+          console.debug('[jobManager] Calling generator with originating:', JSON.stringify(originating));
+        } catch {
+          // ignore
+        }
+        eazipayResult = await generateEaziPayWithRetry(genUrl, { rows: job.request.rows, seed: job.request.seed, originating });
       });
       // Stage 100: generate DDICA XML then package both artifacts + merged metadata
       await this.stage(job, 100, async () => {
@@ -209,15 +223,40 @@ class JobManager extends EventEmitter {
         const folder = path.join(this.outputRoot, job.id);
         await fs.mkdir(folder, { recursive: true });
         if (!eazipayResult) throw new Error('EaziPay result missing at packaging stage');
+        // If originating details were supplied to the job, ensure the generated
+        // EaziPay CSV uses those values for originating sort/account (columns 2 & 3).
+        let finalCsv = eazipayResult.csvContent;
+        if (job.request.sun && job.request.sun.sortCode && job.request.sun.accountNumber) {
+          try {
+            const lines = String(eazipayResult.csvContent).split(/\r?\n/).filter(l => l.length > 0);
+            const patched = lines.map(line => {
+              const parts = line.split(',');
+              // Ensure at least 3 columns exist
+              if (parts.length >= 3) {
+                parts[1] = String(job.request.sun!.sortCode);
+                parts[2] = String(job.request.sun!.accountNumber);
+              }
+              return parts.join(',');
+            });
+            finalCsv = patched.join('\n') + '\n';
+            // Recompute checksum
+            eazipayResult.checksumSha256 = createHash('sha256').update(finalCsv).digest('hex');
+          } catch (err) {
+            logger.warn({ err, id: job.id }, 'Failed to patch originating fields in EaziPay CSV');
+          }
+        }
         const eazipayPath = path.join(folder, eazipayResult.filename);
-        await this.writeFileWithRetries(eazipayPath, eazipayResult.csvContent);
+        await this.writeFileWithRetries(eazipayPath, finalCsv);
         const ddicaFilename = ddica.filename;
         const ddicaPath = path.join(folder, ddicaFilename);
         await this.writeFileWithRetries(ddicaPath, ddica.xmlContent);
         const eaziStats = await fs.stat(eazipayPath);
         const ddicaStats = await fs.stat(ddicaPath);
         const combinedMeta = {
-          request: job.request,
+          request: {
+            ...job.request,
+            sun: job.request.sun ?? null,
+          },
           stages: { eazipayGenerated: 70, ddicaGenerated: 100 },
           createdAt: job.createdAt,
           generator: {
