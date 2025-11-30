@@ -3,6 +3,7 @@ import { jobManager } from '../src/jobs/jobManager.js';
 import { jobStore } from '../src/jobs/jobStore.js';
 import path from 'path';
 import { promises as fs } from 'fs';
+import { waitFor } from '../src/testUtils/waitFor.js';
 
 describe('Retention sweeper', () => {
   const tempRoot = path.join(process.cwd(), 'tmp-retention-tests');
@@ -20,10 +21,7 @@ describe('Retention sweeper', () => {
 
   it('removes expired completed jobs from memory and persistence', async () => {
     const job = jobManager.enqueue({ fileTypes: ['EaziPay'], rows: 1 });
-    for (let i = 0; i < 200; i++) {
-      if (jobManager.get(job.id)?.state === 'completed') break;
-      await new Promise(r => setTimeout(r, 15));
-    }
+    await waitFor(() => jobManager.get(job.id)?.state === 'completed', 3000, 15);
     const rec = jobManager.get(job.id)!;
     expect(rec.state).toBe('completed');
     // Artificially age the job

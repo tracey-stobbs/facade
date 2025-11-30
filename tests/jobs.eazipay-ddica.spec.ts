@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { jobManager } from '../src/jobs/jobManager.js';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { waitFor } from '../src/testUtils/waitFor.js';
 
 // Lightweight integration test: requires generator & report API running locally.
 // Skips if services unreachable.
@@ -14,13 +15,8 @@ describe('JobManager EaziPay + DDICA pipeline', () => {
   it('progresses to 100 and produces zip & metadata', async () => {
     await jobManager.init();
     const job = jobManager.enqueue({ fileTypes: ['EaziPay'], rows: 3, seed: 999 });
-    // Poll until completion or timeout
-    const start = Date.now();
-    while (Date.now() - start < 15000) {
-      const current = jobManager.get(job.id);
-      if (current && current.state === 'completed') break;
-      await new Promise(r => setTimeout(r, 150));
-    }
+    // Wait for job completion deterministically
+    await waitFor(() => jobManager.get(job.id)?.state === 'completed', 15000, 150);
     const finished = jobManager.get(job.id);
     expect(finished).toBeTruthy();
     expect(finished?.state).toBe('completed');
