@@ -19,7 +19,25 @@ function validate(body: CompositeBody): { ok: true; rows: number; seed?: number;
 }
 
 export async function registerCompositeJobRoute(app: FastifyInstance): Promise<void> {
-  app.post('/jobs/composite', async (req, reply): Promise<void> => {
+  app.post('/jobs/composite', {
+    schema: {
+      body: {
+        type: 'object',
+        properties: {
+          rows: { type: 'integer', minimum: 1 },
+          seed: { type: 'integer' },
+          processingDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          metadata: { type: ['object', 'null'] },
+        },
+        required: ['rows'],
+        additionalProperties: true,
+      },
+      response: {
+        202: { type: 'object', properties: { jobId: { type: 'string' }, state: { type: 'string' }, progress: { type: 'number' } }, required: ['jobId','state','progress'] },
+        400: { type: 'object', properties: { error: { type: 'string' } }, required: ['error'] },
+      }
+    }
+  }, async (req, reply): Promise<void> => {
     const body = (req.body || {}) as CompositeBody;
     const model = validate(body);
     if (!model.ok) { await reply.status(400).send({ error: model.error }); return; }

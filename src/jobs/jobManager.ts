@@ -209,7 +209,9 @@ class JobManager extends EventEmitter {
         } catch {
           // ignore
         }
-        eazipayResult = await generateEaziPayWithRetry(genUrl, { rows: job.request.rows, seed: job.request.seed, originating });
+        // For composite jobs producing DDICA, enforce debit-only EaziPay transactions
+        const debitCodes = ["01", "17", "18"]; // true debit set
+        eazipayResult = await generateEaziPayWithRetry(genUrl, { rows: job.request.rows, seed: job.request.seed, originating, allowedTransactionCodes: debitCodes });
       });
       // Stage 100: generate DDICA XML then package both artifacts + merged metadata
       await this.stage(job, 100, async () => {

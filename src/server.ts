@@ -7,7 +7,8 @@ import { registerCompositeJobRoute } from './routes/compositeJob.js';
 import { jobManager } from './jobs/jobManager.js';
 
 const logger = createLogger();
-const app = Fastify({ logger: false });
+// Provide custom logger to Fastify using loggerInstance (v5 change)
+const app = Fastify({ loggerInstance: logger });
 
 // Permissive JSON parser: try strict JSON, then attempt a tolerant transform
 app.addContentTypeParser('application/json', { parseAs: 'string' }, function (req, body, done) {
@@ -38,10 +39,10 @@ app.addContentTypeParser('application/json', { parseAs: 'string' }, function (re
 
 app.register(formBody);
 
-app.get('/health', async (): Promise<{ status: string }> => ({ status: 'ok' }));
+app.get('/health', { schema: { response: { 200: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'] } } } }, async (): Promise<{ status: string }> => ({ status: 'ok' }));
 Promise.all([
-  registerGenerateRoute(app),
-  registerCompositeJobRoute(app),
+  registerGenerateRoute(app as any),
+  registerCompositeJobRoute(app as any),
 ]).catch(err => {
   logger.error({ err }, 'Failed to register routes');
   process.exit(1);
@@ -50,13 +51,13 @@ Promise.all([
 export async function start(): Promise<void> {
   const config = await loadConfig();
   const port = Number(process.env.PORT || 3001);
-  logger.info({ event: 'startup', port, config }, 'Facade starting');
+  app.log.info({ event: 'startup', port, config }, 'Facade starting');
   try {
     await jobManager.init();
     await app.listen({ port, host: '0.0.0.0' });
-    logger.info({ event: 'listening', port }, 'Facade listening');
+    app.log.info({ event: 'listening', port }, 'Facade listening');
   } catch (err) {
-    logger.error({ err }, 'Startup failure');
+    app.log.error({ err }, 'Startup failure');
     // Avoid hard exit during tests to prevent false positives
     if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) process.exit(1);
   }

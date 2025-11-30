@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url';
 export interface EaziPayGenerationOptions {
   rows: number;
   seed?: number;
+  allowedTransactionCodes?: string[];
   originating?: {
     sortCode?: string;
     accountNumber?: string;
@@ -29,6 +30,7 @@ async function httpGenerate(url: string, opts: EaziPayGenerationOptions): Promis
     fileType: 'EaziPay',
     rows: opts.rows,
     seed: opts.seed,
+    allowedTransactionCodes: opts.allowedTransactionCodes,
     originating: opts.originating,
   };
   // Debug: log outbound payload to help trace originating/SUN propagation

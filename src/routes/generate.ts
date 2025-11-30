@@ -79,6 +79,11 @@ export async function registerGenerateRoute(app: FastifyInstance): Promise<void>
         sun: { type: 'object' }
       },
       required: ['fileTypes', 'rows']
+    },
+    response: {
+      200: { type: 'string' },
+      202: { type: 'object', properties: { jobId: { type: 'string' }, state: { type: 'string' }, progress: { type: 'number' } }, required: ['jobId','state','progress'] },
+      400: { type: 'object', properties: { code: { type: 'string' }, detail: { type: 'object' } }, required: ['code'] }
     }
   } as const;
 
