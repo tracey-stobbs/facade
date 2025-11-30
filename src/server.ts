@@ -49,6 +49,15 @@ Promise.all([
 });
 
 export async function start(): Promise<void> {
+  // Validate required env vars
+  const requiredEnv = ['GENERATOR_URL', 'REPORT_API_URL'];
+  const missing = requiredEnv.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    const msg = `Missing required environment variables: ${missing.join(', ')}`;
+    app.log.error({ event: 'startup', missing }, msg);
+    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) process.exit(1);
+    throw new Error(msg);
+  }
   const config = await loadConfig();
   const port = Number(process.env.PORT || 3001);
   app.log.info({ event: 'startup', port, config }, 'Facade starting');

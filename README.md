@@ -32,7 +32,12 @@ Unified entry-point that orchestrates test data file generation (via Generator s
 * `MAX_CONCURRENT_JOBS` (default 4) – parallel job limit.
 * `JOB_RETENTION_DAYS` (default 7) – artifact retention window.
 * `OUTPUT_ROOT` (default `<repo>/jobs`) – base for job artifact folders.
+* `GENERATOR_URL` (required) – URL for generator service (e.g., http://localhost:3002).
+* `REPORT_API_URL` (required) – URL for report API service (e.g., http://localhost:3003).
 * `DEBUG` – set for verbose logging.
+
+### Validation
+On startup, the façade service validates required environment variables (`GENERATOR_URL`, `REPORT_API_URL`). If missing, startup fails with a descriptive error.
 
 ## API Contract
 ### POST `/generate`
