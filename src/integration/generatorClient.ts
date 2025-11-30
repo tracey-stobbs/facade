@@ -13,6 +13,7 @@ export interface EaziPayGenerationOptions {
     accountName?: string;
     sunNumber?: string;
     sunName?: string;
+    import { createLogger } from '../shared/logger.js';
   };
 }
 
@@ -38,7 +39,7 @@ async function httpGenerate(url: string, opts: EaziPayGenerationOptions): Promis
     // eslint-disable-next-line no-console
     console.debug('[generatorClient] HTTP generate payload:', JSON.stringify(body));
   } catch {
-    // ignore
+        logger.debug({ event: 'generatorClient.httpPayload', payload: body }, '[generatorClient] HTTP generate payload');
   }
   const res = await fetch(`${url.replace(/\/$/, '')}/generate-file`, {
     method: 'POST',
@@ -66,7 +67,7 @@ async function directImport(opts: EaziPayGenerationOptions): Promise<EaziPayResu
       // eslint-disable-next-line no-console
       console.debug('[generatorClient] direct import genReq:', JSON.stringify(genReq));
     } catch {
-      // ignore
+          logger.debug({ event: 'generatorClient.directImport', payload: genReq }, '[generatorClient] direct import genReq');
     }
     const result = await mod.generateFile(genReq);
     const csvContent: string = result.fileContent;
