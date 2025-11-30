@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { createLogger } from '../shared/logger.js';
+import { AppError, ErrorCodes } from '../shared/errors.js';
 
 // NOTE: Duplicate JobRecord shape locally to avoid circular import. Keep in sync with jobManager.ts.
 export interface JobRecordStoreShape {
@@ -43,7 +44,7 @@ class JobStore {
   private filePath(id: string): string { return path.join(this.dir, `${id}.json`); }
 
   async save(job: JobRecordStoreShape): Promise<void> {
-    if (!this.initialised) throw new Error('JobStore not initialised');
+    if (!this.initialised) throw new AppError(ErrorCodes.JOBSTORE_NOT_INITIALISED, 'JobStore not initialised');
   // Temp file WITHOUT .json extension so loadAll() won't attempt to parse it if a rename fails.
   const tmp = path.join(this.dir, `${job.id}.tmp-${Date.now()}`);
     const finalPath = this.filePath(job.id);
@@ -70,7 +71,7 @@ class JobStore {
   }
 
   async load(id: string): Promise<JobRecordStoreShape | undefined> {
-    if (!this.initialised) throw new Error('JobStore not initialised');
+    if (!this.initialised) throw new AppError(ErrorCodes.JOBSTORE_NOT_INITIALISED, 'JobStore not initialised');
     try {
       const raw = await fs.readFile(this.filePath(id), 'utf8');
       return JSON.parse(raw) as JobRecordStoreShape;
@@ -78,7 +79,7 @@ class JobStore {
   }
 
   async loadAll(): Promise<JobRecordStoreShape[]> {
-    if (!this.initialised) throw new Error('JobStore not initialised');
+    if (!this.initialised) throw new AppError(ErrorCodes.JOBSTORE_NOT_INITIALISED, 'JobStore not initialised');
     const entries: JobRecordStoreShape[] = [];
     const files = await fs.readdir(this.dir).catch(() => []);
     for (const f of files) {
@@ -105,13 +106,13 @@ class JobStore {
   }
 
   async delete(id: string): Promise<void> {
-    if (!this.initialised) throw new Error('JobStore not initialised');
+    if (!this.initialised) throw new AppError(ErrorCodes.JOBSTORE_NOT_INITIALISED, 'JobStore not initialised');
     await fs.rm(this.filePath(id), { force: true });
   }
 
   // For tests: purge all persisted jobs.
   async clear(): Promise<void> {
-    if (!this.initialised) throw new Error('JobStore not initialised');
+    if (!this.initialised) throw new AppError(ErrorCodes.JOBSTORE_NOT_INITIALISED, 'JobStore not initialised');
     const files = await fs.readdir(this.dir).catch(() => []);
     await Promise.all(files.filter(f => f.endsWith('.json')).map(f => fs.rm(path.join(this.dir, f), { force: true })));
   }
