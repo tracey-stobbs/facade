@@ -16,9 +16,9 @@ Unified entry-point that orchestrates test data file generation (via Generator s
 * SSE streaming progress: `GET /jobs/:id/events`.
 * Retention sweeper removing expired job artifacts based on `JOB_RETENTION_DAYS`.
 ### Reporting Integration (Milestone 3)
-* Separate Report API exposes `/translate/json` and `/translate/file` for CSV→XML workflows (see `../bacs-report-api`).
+* Separate Report API exposes `/translate/json` and `/translate/file` for CSV→XML workflows. Integrate via HTTP or explicit module adapter using env `REPORT_API_ENTRY`.
 ### Generator Integration (Milestone 2)
-* Generator service exposes `/generate-file` for deterministic CSV generation (see `../bacs-file-data-generator`).
+* Generator service exposes `/generate-file` for deterministic CSV generation. Integrate via HTTP or explicit module adapter using env `GENERATOR_ENTRY`.
 ### Logging (Milestone 4)
 * Consistent JSON structure: `{ ts, level, jobId, event, msg, ... }` emitted on lifecycle transitions.
 ### UI Sample (Milestone 5)
@@ -32,6 +32,8 @@ Unified entry-point that orchestrates test data file generation (via Generator s
 * `MAX_CONCURRENT_JOBS` (default 4) – parallel job limit.
 * `JOB_RETENTION_DAYS` (default 7) – artifact retention window.
 * `OUTPUT_ROOT` (default `<repo>/jobs`) – base for job artifact folders.
+* `REPORT_API_ENTRY` – optional ESM path to adapter module for report API.
+* `GENERATOR_ENTRY` – optional ESM path to adapter module for generator.
 * `DEBUG` – set for verbose logging.
 
 ## API Contract

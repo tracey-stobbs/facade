@@ -1,0 +1,41 @@
+{
+  "request": {
+    "fileTypes": [
+      "EaziPay"
+    ],
+    "rows": 12,
+    "sun": {
+      "sunName": "AlphaSUN"
+    }
+  },
+  "stages": {
+    "eazipayGenerated": 70,
+    "ddicaGenerated": 100
+  },
+  "createdAt": "2025-11-30T15:16:54.374Z",
+  "generator": {
+    "eazipay": {
+      "rows": 12,
+      "checksumSha256": "stub",
+      "filename": "EaziPay-12.csv",
+      "sizeBytes": 382
+    },
+    "ddica": {
+      "rows": 12,
+      "checksumSha256": "301e16278efcc9fd024e1f725f92e5dc10f0f867d0b4e990f144bf16d6374242",
+      "filename": "DDICA.xml",
+      "sizeBytes": 342,
+      "sourceXmlPath": "DDICA.xml"
+    }
+  },
+  "checksums": {
+    "EaziPay-12.csv": "stub",
+    "DDICA.xml": "301e16278efcc9fd024e1f725f92e5dc10f0f867d0b4e990f144bf16d6374242"
+  },
+  "totalRowsRequested": 12,
+  "totalRowsGenerated": {
+    "eazipay": 12,
+    "ddica": 12
+  },
+  "durationMs": 138
+}

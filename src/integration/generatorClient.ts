@@ -2,6 +2,9 @@ import fetch from 'node-fetch';
 import { createHash } from 'crypto';
 import path from 'path';
 import { pathToFileURL } from 'url';
+import { createLogger } from '../shared/logger.js';
+
+const logger = createLogger();
 
 export interface EaziPayGenerationOptions {
   rows: number;
@@ -35,10 +38,9 @@ async function httpGenerate(url: string, opts: EaziPayGenerationOptions): Promis
   };
   // Debug: log outbound payload to help trace originating/SUN propagation
   try {
-    // eslint-disable-next-line no-console
-    console.debug('[generatorClient] HTTP generate payload:', JSON.stringify(body));
+    logger.debug({ event: 'generatorClient.httpPayload', payload: body }, 'HTTP generate payload');
   } catch {
-    // ignore
+    /* ignore */
   }
   const res = await fetch(`${url.replace(/\/$/, '')}/generate-file`, {
     method: 'POST',
@@ -56,17 +58,15 @@ async function httpGenerate(url: string, opts: EaziPayGenerationOptions): Promis
 async function directImport(opts: EaziPayGenerationOptions): Promise<EaziPayResult> {
   // Fallback path: import generator library directly if available as sibling workspace.
   try {
-    // Resolve sibling workspace package (assumes facade is in c:/git/BACS/facade)
-    const candidate = path.resolve(process.cwd(), '..', 'bacs-file-data-generator', 'dist', 'index.js');
-    const fileUrl = pathToFileURL(candidate).href;
-    const mod: any = await import(fileUrl);
+    const entry = process.env.GENERATOR_ENTRY;
+    if (!entry) throw new Error('Missing GENERATOR_ENTRY. Facade must integrate via an explicit adapter or HTTP URL.');
+    const mod: any = await import(entry);
     if (!mod || !mod.generateFile) throw new Error('generateFile export missing');
     const genReq = { fileType: 'EaziPay', numberOfRows: opts.rows, originating: opts.originating };
     try {
-      // eslint-disable-next-line no-console
-      console.debug('[generatorClient] direct import genReq:', JSON.stringify(genReq));
+      logger.debug({ event: 'generatorClient.directImport', payload: genReq }, 'Direct import payload');
     } catch {
-      // ignore
+      /* ignore */
     }
     const result = await mod.generateFile(genReq);
     const csvContent: string = result.fileContent;
